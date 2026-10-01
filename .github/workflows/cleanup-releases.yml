@@ -1,0 +1,74 @@
+name: Cleanup Unwanted Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      keep_latest_airoha:
+        description: 'Сколько последних релизов airoha оставить (например, 2 или 3)'
+        type: number
+        default: 3
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete non-airoha and old releases
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+
+            console.log(`Всего релизов найдено: ${releases.length}`);
+            const keepCount = parseInt("${{ inputs.keep_latest_airoha }}") || 3;
+            let airohaKept = 0;
+
+            for (const rel of releases) {
+              const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                release_id: rel.id,
+                per_page: 100
+              });
+
+              const hasAiroha = assets.some(a => a.name.includes('airoha'));
+              let shouldDelete = false;
+
+              if (!hasAiroha) {
+                // Чужой релиз (нет airoha)
+                shouldDelete = true;
+              } else {
+                airohaKept++;
+                if (airohaKept > keepCount) {
+                  // Старый релиз airoha, превышающий лимит
+                  shouldDelete = true;
+                }
+              }
+
+              if (shouldDelete) {
+                console.log(`Удаление: ${rel.tag_name}`);
+                await github.rest.repos.deleteRelease({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: rel.id
+                });
+                try {
+                  await github.rest.git.deleteRef({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    ref: `tags/${rel.tag_name}`
+                  });
+                } catch (e) {
+                  // Игнорируем ошибку тега, если его нет
+                }
+              } else {
+                console.log(`ОСТАВЛЕН: ${rel.tag_name}`);
+              }
+            }
